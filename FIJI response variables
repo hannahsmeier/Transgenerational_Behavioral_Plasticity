@@ -1,4 +1,11 @@
 
+---
+title: "FIJI response variables"
+author: "Hannah S. Meier, Anna Ritz, and Sam B. Fey"
+date: "10/11/2021"
+output: pdf_document
+---
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
