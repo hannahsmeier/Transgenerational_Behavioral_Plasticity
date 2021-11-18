@@ -1,0 +1,223 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##Package Installation/Set Up:
+library(tseries)
+library(ggplot2)
+library(moderndive)
+library(NHANES)
+library(tidyverse)
+library(dplyr)
+library(gapminder)
+library(png)
+library(grid)
+library(infer)
+library(knitr)
+library(readr)
+
+```
+
+```{r}
+FIJI_summary <- function(phyto_raw_movement) {
+#Load data and order by particle ID so analysis gets done on particles based on this variable  
+  phyto_sample <- phyto_raw_movement %>% 
+    group_by(ID)
+  
+#From all possible FIJI output response variables pick the main ones of interest 
+#For this project we were interested in time (POSITION_T), particle speed (TRACK_MEAN_SPEED) and size (ESTIMATED_DIAMETER)
+  phyto_reduced_movement <- phyto_sample %>% 
+    select(c("TRACK_ID","POSITION_T", "TRACK_MEAN_SPEED", "ESTIMATED_DIAMETER")) %>%
+    mutate(IS_MOVING = if_else(TRACK_MEAN_SPEED <1,0,1))
+#Next we wanted to gauge how many particles were actually moving so we created a new column which is filled with an indicator to show whether a particle is moving 
+#It is important to note that 1 is an arbitrary threshold that we selected for in the course of this work 
+#This was because our study organism is suspended in water meaning that there was more background movement 
+#Setting the threshold to 1 micron/sec (which scales to 1 pixel/sec) was our way of trying to filter out this background noise without introducing significant bias
+  
+#Next we create a summary object for a single treatment where all summary values are for an individual particle
+  phyto_movement <- phyto_reduced_movement %>% 
+    group_by(ID) %>%
+    summarise(mean_diameter = mean(ESTIMATED_DIAMETER),
+              mean_speed = mean(TRACK_MEAN_SPEED),
+              n=n(),
+              PER_MOVE=sum(IS_MOVING)/n)
+#Create a summary object for the entire treatment 
+#The grand summary for a single video - the average across all particles measured 
+  phyto_sum_movement <- phyto_movement %>%
+    summarise(N = n(),
+              mean_size = mean(mean_diameter),
+              sd_size = sd(mean_diameter),
+              av_speed = mean(mean_speed),
+              sd_speed = sd(mean_speed),
+              percent_moving = sum(PER_MOVE)/N)
+  
+#Return the grand summary object
+  return(phyto_sum_movement)
+}
+
+
+#Run the function on data frame of interest 
+```
+
+```{r}
+#Set working directory
+setwd("~/Desktop/thesis_data/phyto_mov_data/phyto_mov_data_09-30-2020/phyto_mov_1A_09-30-2020")
+
+#Import data frame
+links_in_tracks <- read_csv("09-30-2020_1A_links_in_tracks_statistics.csv")
+spots_in_tracks <- read_csv("09-30-2020_1A_spots_in_tracks_statistics.csv")
+track_statistics <- read_csv("09-30-2020_1A_track_statistics.csv")
+
+#Merge these data frames 
+phyto_raw_movement <- merge(track_statistics, spots_in_tracks, by="TRACK_ID")
+
+#Add date and treatment columns (will become relevant in across treatment analysis)
+phyto_raw_movement <- mutate(phyto_raw_movement, date = "09-30-2020") %>%
+  mutate(phyto_raw_movement, treatment = "1A")
+
+#Run data frame through function
+FIJI_sum_day_1 <- FIJI_summary(phyto_raw_movement)
+
+FIJI_sum_day_1_1A <- FIJI_sum_day_1 %>%
+  mutate(FIJI_sum_day_1, date = "09-30-2020") %>%
+  mutate(FIJI_sum_day_1, treatment = "1A")
+
+#Repeat for all data frames
+```
+
+```{r}
+#Combine all of the individual data frames into one large data frame
+FIJI_summary <- rbind(FIJI_sum_day_1_1A)
+
+#Add acclimation and acute temperature columns to the data frame based on treatment ID
+FIJI_fin_summary <- FIJI_summary %>%
+  mutate(Trt_ID = substring(treatment, 1, 1))%>%
+  mutate(Acc_Temp= if_else(Trt_ID > 0 & Trt_ID< 4, "12.5", 
+                           if_else( Trt_ID >3 & Trt_ID <7, "25", "37.5"))) %>%
+  mutate(Acute_Temp= if_else(Trt_ID == 1 | Trt_ID == 4 | Trt_ID == 7 ,"12.5", 
+                            if_else(Trt_ID == 2 | Trt_ID == 5 | Trt_ID == 8 ,"25", "37.5"))) %>%
+    mutate (day= if_else(date=="09-30-2020", 0, 
+               if_else(date=="10-01-2020", 1, 
+               if_else(date=="10-02-2020", 2,
+               if_else(date=="10-05-2020", 5, 
+                       if_else(date=="10-06-2020", 6,          
+               if_else(date=="10-07-2020", 7, 
+               if_else(date=="10-09-2020", 9, 
+               if_else(date=="10-14-2020", 14, 100)))))))))
+
+#Create a new data frame to take the mean across treatment replicates 
+#Additionally, calculate standard error 
+FIJI_fin_sum_1 <- FIJI_fin_summary %>% group_by(Acc_Temp, Acute_Temp, day) %>%
+  summarise(size= mean(mean_size), size_se= sd(mean_size)/sqrt(3), 
+            per_mov=mean(percent_moving),per_mov_se=sd(percent_moving)/sqrt(3),
+            speed=mean(av_speed), speed_se= sd(av_speed)/sqrt(3))
+
+# New facet label names
+Acc_fac <- FIJI_fin_sum_1
+# Modify the data for making graphs
+Acc_fac$Acc_Temp <- factor(Acc_fac$Acc_Temp, levels = c("12.5", "25", "37.5"), 
+                  labels = c("12.5°C", "25°C", "37.5°C"))
+
+#Create a graph for each response variable 
+
+#Graph for mean particle size:
+ggplot(data=Acc_fac, aes(x=Day, y=size, color=as.factor(Acute_Temp)))+
+  geom_point(aes(colour=as.factor(Acute_Temp)),position= position_dodge(.5))+
+  geom_errorbar(aes(colour= as.factor(Acute_Temp),ymin=size-size_se,ymax=size+size_se,width=.2),position=position_dodge(.5))+
+  geom_smooth(method="loess",formula=y~x,se=F,lwd=.75,lty=2)+
+  scale_x_continuous("Day",breaks=c(0,2,4,6,8,10,12,14),minor_break=c(0,2,4,6,8,10,12,14),labels=c(0,2,4,6,8,10,12,14))+
+  ylab("Mean Particle Size (microns)")+
+  labs(color="Acute Temperature (°C)") +
+  facet_wrap(~Acc_Temp,labeller = "label_both") +
+  scale_color_manual(values = c("#00AFBB", "#E7B800", "#FC4E07")) + 
+  theme(text = element_text(size = 20))
+
+#Graph for mean speed:
+ggplot(data=Acc_fac %>%filter(day<15), aes(x=day, y=speed, color=as.factor(Acute_Temp)))+
+  geom_point(aes(colour=as.factor(Acute_Temp)),position= position_dodge(.5))+
+  geom_errorbar(aes(colour=as.factor(Acute_Temp),ymin=speed-speed_se,ymax=speed+speed_se,width=.2),position=position_dodge(.5))+
+  geom_smooth(method="loess",formula=y~x,se=F,lwd=.75,lty=2)+
+  scale_x_continuous("Day",breaks=c(0,2, 4, 6, 8, 10,12,14),minor_break=c(0,2, 4, 6, 8, 10,12,14),labels=c(0,2, 4, 6, 8, 10,12,14))+
+  ylab("Average Speed (microns/sec)")+
+  labs(color="Acclimated Temperature (°C)") +
+  facet_wrap(~Acc_Temp,labeller = "label_both") +
+  scale_color_manual(values = c("#00AFBB", "#E7B800", "#FC4E07")) + 
+  theme(text = element_text(size = 20))
+
+#Graph for proportion of moving particles: 
+ggplot(data=Acc_fac, aes(x=day, y=per_mov, color=as.factor(Acute_Temp)))+
+  geom_point(aes(colour=as.factor(Acute_Temp)),position= position_dodge(.5))+
+  geom_errorbar(aes(colour=as.factor(Acute_Temp),ymin=per_mov-per_mov_se,ymax=per_mov+per_mov_se,width=.2),position=position_dodge(.5))+
+  geom_smooth(method="loess",formula=y~x,se=F,lwd=.75,lty=2)+
+  scale_x_continuous("Day",breaks=c(0,2, 4, 6, 8, 10,12,14),minor_break=c(0, 2, 4, 6, 8, 10, 12, 14),labels=c(0, 2, 4, 6, 8, 10, 12, 14))+
+  ylab("Proportion of Moving Particles")+
+  labs(color="Acclimated Temperature (°C)") +
+  facet_wrap(~Acc_Temp,labeller = "label_both") +
+  scale_color_manual(values = c("#00AFBB", "#E7B800", "#FC4E07")) + 
+  theme(text = element_text(size = 20))
+
+```
+
+
+```{r Summary statistics for average speed}
+library(readr)
+library(tidyverse) 
+#install.packages("gridExtra")
+library(gridExtra)
+#install.packages("lme4")
+library(lme4) #ME
+#installed.packages("nlme")
+library(nlme) #ME
+#install.packages("mgcv")
+library(mgcv) #GAM
+#install.packages("bbmle")
+library(bbmle) #has AICtab function
+
+#load data and add Dat column
+dat<- FIJI_fin_summary %>%
+  mutate(av_speed=if_else(Trt_ID==1 & Day==0,av_speed*.8,av_speed)) %>% #correcting for .8x zoom, check with hannah and tamara
+  mutate(sd_speed=if_else(Trt_ID==1 & Day==0,sd_speed*.8,sd_speed)) 
+
+dat_sum<-dat %>% group_by (Acc_Temp, Acute_Temp, Day) %>%
+  summarise(size= mean(mean_size), size_se= sd(mean_size)/sqrt(3), 
+            per_mov=mean(percent_moving),per_mov_se=sd(percent_moving)/sqrt(3),
+            speed=mean(av_speed), speed_se= sd(av_speed)/sqrt(3))
+
+#analyze data using ANOVA approach
+#fixed approaches
+#1st and last Day, technically correct but piece wise
+rmaovmod_FE_0<-aov(data= dat %>% filter (Day==0) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_0)
+
+rmaovmod_FE_1<-aov(data= dat %>% filter (Day==1) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_1)
+
+rmaovmod_FE_2<-aov(data= dat %>% filter (Day==2) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_2)
+
+rmaovmod_FE_5<-aov(data= dat %>% filter (Day==5) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_5)
+
+rmaovmod_FE_6<-aov(data= dat %>% filter (Day==6) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_6)
+
+rmaovmod_FE_7<-aov(data= dat %>% filter (Day==7) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_7)
+
+rmaovmod_FE_9<-aov(data= dat %>% filter (Day==9) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_9)
+
+#now last Day
+rmaovmod_FE_14<-aov(data= dat %>% filter (Day==14) , av_speed ~ as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE_14)
+
+#fixed effects only, note this is not correct but will be a useful approximation
+rmaovmod_FE<-aov(data=dat , mean_size ~ as.factor(Day) * as.factor(Acute_Temp) * as.factor(Acc_Temp))
+summary(rmaovmod_FE)
+
+#Enter Mixed effects models. We are making multiple measurements on the same samples over time
+rmaovmod_ME= lme(mean_size~ as.factor(Day) * as.factor(Acute_Temp) * as.factor(Acc_Temp), random = ~1 | treatment, data = dat )
+anova(rmaovmod_ME)
+
+#Do the same for all other response variables
+```
